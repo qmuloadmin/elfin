@@ -10,6 +10,18 @@ use std::io::prelude::*;
 const EIDENTSIZE: usize = 16;
 const SHN_UNDEF: u16 = 0;
 
+// Section Header types
+const SHT_NULL: u32 = 0;
+const SHT_PROGBITS: u32 = 1;
+const SHT_SYMTAB: u32 = 2;
+const SHT_STRTAB: u32 = 3;
+const SHT_RELA: u32 = 4;
+const SHT_HASH: u32 = 5;
+const SHT_DYN: u32 = 6;
+const SHT_NOTE: u32 = 7;
+const SHT_NOBITS: u32 = 8;
+const SHT_REL: u32 = 9;
+
 // Constants for various file types, machine types, etc
 const TYPE_NONE: u16 = 0;
 const TYPE_RELO: u16 = 1;
@@ -123,11 +135,11 @@ impl ElfHeaders {
 
     fn type_to_string(&self) -> String {
         match self.file_type {
-            x if x == TYPE_NONE => String::from("No file type"),
-            x if x == TYPE_RELO => String::from("Relocatable File"),
-            x if x == TYPE_EXEC => String::from("Executable File"),
-            x if x == TYPE_DYN => String::from("Shared Object File"),
-            x if x == TYPE_CORE => String::from("Core file"),
+            TYPE_NONE => String::from("No file type"),
+            TYPE_RELO => String::from("Relocatable File"),
+            TYPE_EXEC => String::from("Executable File"),
+            TYPE_DYN => String::from("Shared Object File"),
+            TYPE_CORE => String::from("Core file"),
             _ => String::from("Unknown/Unsupported Type")
         }
     }
@@ -272,6 +284,38 @@ impl SectionHeader {
         self.size = utils::bytes_to_u64(buffer64);
         Ok(())
     }
+
+    fn type_to_string(&self) -> String {
+        match self.stype {
+            SHT_NULL => "Unused",
+            SHT_PROGBITS => "Program Data",
+            SHT_SYMTAB => "Linker Symbol Table",
+            SHT_STRTAB => "String Table",
+            SHT_RELA => "Relocation (RELA)",
+            SHT_HASH => "Symbol Hash Table",
+            SHT_DYN => "Dynamic Linking Table",
+            SHT_NOTE => "Notes",
+            SHT_NOBITS => "No Space",
+            SHT_REL => "Relocation (REL)",
+            _ => "Unknown Type"
+        }.to_owned()
+    }
+
+    fn flags_to_string(&self) -> String {
+        let mut flags = ['-'; 5];
+        flags[0] = '[';
+        if self.flags & 0b100 == 0b100 {
+            flags[1] = 'X';
+        } 
+        if self.flags & 0b010 == 0b010 {
+            flags[2] = 'A';
+        }
+        if self.flags & 0b001 == 0b001 {
+            flags[3] = 'W';
+        }
+        flags[4] = ']';
+        flags.iter().collect()
+    }
 }
 
 impl std::fmt::Display for SectionHeader {
@@ -280,8 +324,8 @@ impl std::fmt::Display for SectionHeader {
 "name: {} \t\t type: {} \t\t flags: {}
 address: {:x} \t offset: {:x} \t\t size: {:x}",
 self.str_name,
-self.stype,
-self.flags,
+self.type_to_string(),
+self.flags_to_string(),
 self.img_addr,
 self.offset,
 self.size)
