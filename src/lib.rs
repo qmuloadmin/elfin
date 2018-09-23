@@ -2,8 +2,8 @@
 mod tests;
 mod utils;
 
-use std::io;
 use std::fs::File;
+use std::io;
 use std::io::prelude::*;
 
 // Constants mapping original C-constant values
@@ -30,16 +30,16 @@ const TYPE_DYN: u16 = 3;
 const TYPE_CORE: u16 = 4;
 
 #[derive(Debug)]
-pub struct ElfError{
+pub struct ElfError {
     desc: String,
-    cause: Option<std::io::Error>
+    cause: Option<std::io::Error>,
 }
 
 impl std::convert::From<io::Error> for ElfError {
     fn from(orig: io::Error) -> Self {
-        ElfError{
+        ElfError {
             desc: String::from("An IO Error occurred"),
-            cause: Some(orig)
+            cause: Some(orig),
         }
     }
 }
@@ -51,7 +51,7 @@ impl std::error::Error for ElfError {
     fn cause(&self) -> Option<&std::error::Error> {
         match &self.cause {
             Some(x) => Some(x),
-            None => None
+            None => None,
         }
     }
 }
@@ -77,13 +77,14 @@ pub struct ElfHeaders {
     pub pheader_count: u16,
     pub sheader_size: u16,
     pub sheader_count: u16,
-    pub str_header_index: u16, 
+    pub str_header_index: u16,
 }
 
 impl std::fmt::Display for ElfHeaders {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f,
-"Magic Bits: \t\t\t {:?}
+        write!(
+            f,
+            "Magic Bits: \t\t\t {:?}
 File Type: \t\t\t {}
 Version: \t\t\t {}
 Entry Address: \t\t\t 0x{:x}
@@ -115,7 +116,7 @@ String Header Id: \t\t {}",
 
 impl ElfHeaders {
     pub fn new() -> Self {
-        ElfHeaders{
+        ElfHeaders {
             ident: [0 as char; EIDENTSIZE],
             file_type: 0,
             machine: 0,
@@ -140,24 +141,24 @@ impl ElfHeaders {
             TYPE_EXEC => String::from("Executable File"),
             TYPE_DYN => String::from("Shared Object File"),
             TYPE_CORE => String::from("Core file"),
-            _ => String::from("Unknown/Unsupported Type")
+            _ => String::from("Unknown/Unsupported Type"),
         }
     }
-    
+
     // Read in headers from a binary ELF file by name
     pub fn from_file(&mut self, f: &mut File) -> Result<(), ElfError> {
         let mut buffer = [0; EIDENTSIZE];
         f.read(&mut buffer)?;
         // Check to ensure the file's magic bits are set to ELF spec
         if buffer[0..4] != [0x7f, 0x45, 0x4c, 0x46] {
-            return Err(ElfError{
+            return Err(ElfError {
                 desc: String::from("Invalid binary format; not an ELF file"),
-                cause: None
+                cause: None,
             });
         }
         for (i, each) in buffer.into_iter().enumerate() {
             self.ident[i] = *each as char;
-        };
+        }
         // Read in the next several u16s
         let mut buffer = [0; 2];
         f.read(&mut buffer)?;
@@ -195,66 +196,110 @@ impl ElfHeaders {
         Ok(())
     }
 
-    pub fn sections_from_file(&self, f:&mut File) -> Result<Vec<SectionHeader>, ElfError> {
+    pub fn sections_from_file(&self, f: &mut File) -> Result<Vec<Section>, ElfError> {
         let mut headers = vec![];
-        let mut str_tbl_bytes = vec![];
+        // Read in each header and parse them
         for i in 0..self.sheader_count {
-            let mut section_header = SectionHeader::new(self.section_offset + (self.sheader_size* i) as u64);
+            let mut section_header =
+                SectionHeader::new(self.section_offset + (self.sheader_size * i) as u64);
             section_header.from_file(f)?;
             headers.push(section_header);
         }
-        // get the string header table and verify that its type is 3
-        {
-            let str_tbl = &headers[self.str_header_index as usize];
-            if str_tbl.stype != 3 {
-                return Err(ElfError{
-                    desc: String::from("String Header Table is not a string table type section"),
-                    cause: None
-                })
-            }
-            f.seek(io::SeekFrom::Start(str_tbl.offset))?;
-            let mut buffer = [0; 8]; // read 8 bytes at a time until we've exceeded length of str_tbl
-            let mut i = 0;
-            while i < str_tbl.size {
-                f.read(&mut buffer)?;
-                i += 8;
-                str_tbl_bytes.extend_from_slice(&buffer);
-            }
-        }
-        // expand each sections name from the string table data 
-        for header in &mut headers {
-            let start = header.name;
-            let name = utils::read_null_term_str(start, &str_tbl_bytes);
-            header.str_name = name;
-        }
-        Ok(headers)
-    }
+        let mut sections = Vec::with_capacity(headers.len());
+        // Read in data for each header
+        for header in headers.into_iter() {
+            let mut buffer = vec![0; header.size as usize];
 
+            if header.sec_type != SectionType::NoBits {
+                // move file pointer to start of section data
+                f.seek(io::SeekFrom::Start(header.offset))?;
+                // allocate new buffer for the size of the section data
+                let read = f.read(&mut buffer)?;
+                if read != buffer.len() {
+                    return Err(ElfError{
+                        desc: format!("Failed to read {} (size) bytes from section in file", buffer.capacity()),
+                        cause: None,
+                    })
+                }
+            }
+            sections.push(Section{
+                header: header,
+                data: buffer,
+            });
+        }
+
+        // get the string header table and verify that its type is StringTable
+        let mut string_table_data: Vec<u8>;
+        {
+            let str_tbl = &sections[self.str_header_index as usize];
+            if str_tbl.header.sec_type != SectionType::StringTable {
+                return Err(ElfError {
+                    desc: String::from("String Header Table is not a string table type section"),
+                    cause: None,
+                });
+            }
+            string_table_data = str_tbl.data.clone();
+        }
+        // expand each sections name from the string table data
+        for section in &mut sections {
+            let start = section.header.name;
+            let name = utils::read_null_term_str(start, &string_table_data);
+            section.header.str_name = name;
+        }
+        Ok(sections)
+    }
+}
+
+pub struct Section {
+    pub header: SectionHeader,
+    pub data: Vec<u8>,
+}
+
+impl std::fmt::Display for Section {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}\n",self.header)
+    }
 }
 
 pub struct SectionHeader {
     ptr: u64,
-    str_name: String,
-    pub name: u32,
-    pub stype: u32,
+    pub str_name: String,
+    name: u32,
+    i_type: u32,
+    pub sec_type: SectionType,
     pub flags: u64,
     pub img_addr: u64,
-    pub offset: u64,
-    pub size: u64,
-    pub link: u32,
+    offset: u64,
+    size: u64,
+    link: u32,
     pub info: u32,
-    pub align: u64,
+    align: u64,
     pub entry_size: u64,
 }
 
-impl SectionHeader {
+#[derive(PartialEq)]
+pub enum SectionType {
+    Unused,
+    ProgramData,
+    SymbolTable,
+    StringTable,
+    Rela,
+    Hash,
+    Dynamic,
+    Notes,
+    NoBits,
+    Rel,
+    Unknown
+}
 
+impl SectionHeader {
     pub fn new(location: u64) -> Self {
-        SectionHeader{
+        SectionHeader {
             ptr: location,
             str_name: String::from(""),
+            sec_type: SectionType::Unknown,
             name: 0,
-            stype: 0,
+            i_type: 0,
             flags: 0,
             img_addr: 0,
             offset: 0,
@@ -272,7 +317,21 @@ impl SectionHeader {
         f.read(&mut buffer)?;
         self.name = utils::bytes_to_u32(buffer);
         f.read(&mut buffer)?;
-        self.stype = utils::bytes_to_u32(buffer);
+        self.i_type = utils::bytes_to_u32(buffer);
+        // set type from raw integer type
+        self.sec_type = match self.i_type {
+            SHT_NULL => SectionType::Unused,
+            SHT_PROGBITS => SectionType::ProgramData,
+            SHT_SYMTAB => SectionType::SymbolTable,
+            SHT_STRTAB => SectionType::StringTable,
+            SHT_RELA => SectionType::Rela,
+            SHT_HASH => SectionType::Hash,
+            SHT_DYN => SectionType::Dynamic,
+            SHT_NOTE => SectionType::Notes,
+            SHT_NOBITS => SectionType::NoBits,
+            SHT_REL => SectionType::Rel,
+            _ => SectionType::Unknown
+        };
         let mut buffer64 = [0; 8];
         f.read(&mut buffer64)?;
         self.flags = utils::bytes_to_u64(buffer64);
@@ -286,18 +345,18 @@ impl SectionHeader {
     }
 
     fn type_to_string(&self) -> String {
-        match self.stype {
-            SHT_NULL => "Unused",
-            SHT_PROGBITS => "Program Data",
-            SHT_SYMTAB => "Linker Symbol Table",
-            SHT_STRTAB => "String Table",
-            SHT_RELA => "Relocation (RELA)",
-            SHT_HASH => "Symbol Hash Table",
-            SHT_DYN => "Dynamic Linking Table",
-            SHT_NOTE => "Notes",
-            SHT_NOBITS => "No Space",
-            SHT_REL => "Relocation (REL)",
-            _ => "Unknown Type"
+        match &self.sec_type {
+            SectionType::Unused => "Unused",
+            SectionType::ProgramData => "Program Data",
+            SectionType::SymbolTable => "Linker Symbol Table",
+            SectionType::StringTable => "String Table",
+            SectionType::Rela => "Relocation (RELA)",
+            SectionType::Hash => "Symbol Hash Table",
+            SectionType::Dynamic => "Dynamic Linking Table",
+            SectionType::Notes => "Notes",
+            SectionType::NoBits => "No Space",
+            SectionType::Rel => "Relocation (REL)",
+            SectionType::Unknown => "Unknown Type",
         }.to_owned()
     }
 
@@ -306,7 +365,7 @@ impl SectionHeader {
         flags[0] = '[';
         if self.flags & 0b100 == 0b100 {
             flags[1] = 'X';
-        } 
+        }
         if self.flags & 0b010 == 0b010 {
             flags[2] = 'A';
         }
@@ -320,14 +379,16 @@ impl SectionHeader {
 
 impl std::fmt::Display for SectionHeader {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, 
-"name: {} \t\t type: {} \t\t flags: {}
-address: {:x} \t offset: {:x} \t\t size: {:x}",
-self.str_name,
-self.type_to_string(),
-self.flags_to_string(),
-self.img_addr,
-self.offset,
-self.size)
+        write!(
+            f,
+            "name: {:25} type: {:20} flags: {}
+address: {:<22x} offset: {:<18x} size: {:x}",
+            self.str_name,
+            self.type_to_string(),
+            self.flags_to_string(),
+            self.img_addr,
+            self.offset,
+            self.size
+        )
     }
 }
